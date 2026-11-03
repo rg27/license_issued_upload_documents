@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Documents</title>
+    <script src="https://live.zwidgets.com/js-sdk/1.2/ZohoEmbededAppSDK.min.js"></script>
+    <link rel="stylesheet" href="./css/index.css">
+  </head>
+  <body>
+    <div id="loader-overlay" class="hidden" role="status" aria-hidden="true">
+      <div class="loader-card">
+        <div class="spinner-wrap">
+          <div class="spinner-track"></div>
+          <div class="spinner-arc animate-spin"></div>
+        </div>
+        <p id="loader-text" class="loader-text">Loading...</p>
+      </div>
+    </div>
+
+    <form id="record-form" class="card" novalidate>
+      <div class="card-accent-bar"></div>
+
+      <div class="card-head">
+        <h1 class="card-title">Upload Documents</h1>
+        <p id="user-greeting" class="greeting">Hello!</p>
+      </div>
+
+      <div class="section-title"><span class="dot"></span><h2>Documents</h2><span class="line"></span></div>
+
+      <div class="grid upload-grid">
+        <div class="field full">
+          <label class="field-label" for="file-input">Supporting Files <span class="asterisk">*</span></label>
+
+          <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose files to upload">
+            <input type="file" id="file-input" multiple hidden>
+            <div class="dz-icon">
+              <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v12m0-12l-4 4m4-4l4 4"/></svg>
+            </div>
+            <p class="dz-title">Drag and drop files here, or <span class="dz-link">browse</span></p>
+            <p id="dz-hint" class="dz-hint"></p>
+          </div>
+
+          <span id="files-error" class="error-msg hidden" role="alert"></span>
+
+          <div id="file-summary" class="file-summary hidden">
+            <span id="file-count"></span>
+            <button type="button" id="clear-all" class="link-btn">Remove all</button>
+          </div>
+          <ul id="file-list" class="file-list"></ul>
+        </div>
+      </div>
+
+      <div id="result-section" class="hidden">
+        <div class="section-title"><span class="dot"></span><h2>Captured Address</h2><span class="line"></span><span class="temp-pill">Temporary preview</span></div>
+        <div class="grid result-grid">
+          <div class="field full"><div id="result-status" class="result-status" role="status"></div></div>
+          <div class="field full"><label class="field-label" for="res-street">Street</label><input type="text" id="res-street" class="input" readonly></div>
+          <div class="field"><label class="field-label" for="res-city">City</label><input type="text" id="res-city" class="input" readonly></div>
+          <div class="field"><label class="field-label" for="res-country">Country</label><input type="text" id="res-country" class="input" readonly></div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button type="button" class="btn btn-secondary" id="close-btn">Close</button>
+        <button type="submit" class="btn btn-primary" id="upload-btn">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
+          <span id="upload-btn-label">Upload Files</span>
+        </button>
+      </div>
+    </form>
+
+    <script src="./js/app.js"></script>
+  </body>
+</html>
