@@ -1,42 +1,68 @@
 /* ---------------------------------------------------------------
    Upload Documents widget
-   Attaches every selected file to the CRM record's Attachments.
+   Attaches every selected file to the CRM record's Attachments,
+   then reads the company address from the uploaded documents.
+
+   Document logic:
+   1. Lease-type documents (ULA, Ejari, Tenancy Contract, Lease Agreement,
+      Lease Document, Facility Agreement, Co-Working Agreement) are the same kind of document. Each freezone issues only
+      one of them, so they are not ranked against each other.
+      The street must have at least 5 characters.
+   2. If there is no such file, or its street is empty or too short, the
+      TL (Trade License) is read. Its street must have at least 10 characters.
+   3. If the TL also fails, everything is left blank.
 --------------------------------------------------------------- */
 const MAX_FILE_MB = 20;
 const MAX_FILES = 10;
 const ALLOWED_EXT = ["pdf", "doc", "docx", "xls", "xlsx", "csv", "txt", "png", "jpg", "jpeg", "zip"];
 
 let currentRecordId = null, currentEntity = null, triggeredByUser = null;
-let files = [];          // { id, file, status: "pending" | "uploading" | "done" | "error", error }
+let files = [];          // { id, file, status: "pending" | "uploading" | "done" | "error", error, attachmentId }
 let isUploading = false;
 let nextId = 1;
+let addressCaptured = false;
 
-/* Document priority: a file with "ULA" in its name is used first. Only if there is none, a file with "TL" is used. */
-const DOC_TAGS = ["ULA", "TL"];   // priority order
-const EXTRACT_FUNCTION = "tl_address_ocr_zia";   // API name of the Deluge function that reads street and city
-
-const hasTag = (name, tag) => name.toUpperCase().includes(tag);
-const tagOf = (name) => DOC_TAGS.find(t => hasTag(name, t)) || null;
-const matchesRequired = (name) => tagOf(name) !== null;
-
-/* Picks the uploaded file to read: the first ULA file, otherwise the first TL file */
-function pickSourceFile() {
-    for (const tag of DOC_TAGS) {
-        const f = files.find(x => x.status === "done" && hasTag(x.file.name, tag));
-        if (f) return f;
-    }
-    return null;
-}
+/* Names are matched ignoring capital / small letters (the "i" flag).
+   Short tags like ULA and TL must stand alone as words, so "Title.pdf" or "Regulation.pdf" do not match.
+   group "lease" = read first. group "tl" = fallback.
+   minStreet = the shortest street (in characters) that counts as a real address. */
+const DOC_TYPES = [
+    { label: "ULA",              group: "lease", minStreet: 5,  re: /(^|[^a-z])ula([^a-z]|$)/i },
+    { label: "Ejari",            group: "lease", minStreet: 5,  re: /ejari/i },
+    { label: "Tenancy Contract", group: "lease", minStreet: 5,  re: /tenancy[\s_-]*contract/i },
+    { label: "Lease Agreement",  group: "lease", minStreet: 5,  re: /lease[\s_-]*agreement/i },
+    { label: "Lease Document",   group: "lease", minStreet: 5,  re: /lease[\s_-]*document/i },
+    { label: "Facility Agreement", group: "lease", minStreet: 5, re: /facilit(y|ies)[\s_-]*agreements?/i },
+    { label: "Co-Working Agreement", group: "lease", minStreet: 5, re: /co[\s_-]*working[\s_-]*agreements?/i },
+    { label: "TL",               group: "tl",    minStreet: 10, re: /(^|[^a-z])tl([^a-z]|$)/i }
+];
+const READABLE_EXT = ["pdf", "png", "jpg", "jpeg"];   // file types the OCR can read
+const EXTRACT_FUNCTION = "tl_address_ocr_zia";        // API name of the Deluge function that reads street and city
 
 const $ = (id) => document.getElementById(id);
-
-const WARN_ICON = '<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>';
-const CHECK_ICON = '<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>';
-const CLOSE_ICON = '<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>';
 
 /* ---------- Helpers ---------- */
 const getExt = (name) => (name.includes(".") ? name.split(".").pop().toLowerCase() : "");
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const stem = (name) => name.replace(/\.[^.]+$/, "");
+const docTypeOf = (name) => DOC_TYPES.find(t => t.re.test(stem(name))) || null;
+const tagOf = (name) => docTypeOf(name)?.label || null;
+const matchesRequired = (name) => docTypeOf(name) !== null && READABLE_EXT.includes(getExt(name));
+
+/* Uploaded, readable source files: lease-type documents first, then TL */
+function sourceCandidates() {
+    const list = files.filter(x =>
+        x.status === "done" && x.attachmentId &&
+        docTypeOf(x.file.name) &&
+        READABLE_EXT.includes(getExt(x.file.name))
+    );
+    const rank = (x) => (docTypeOf(x.file.name).group === "lease" ? 0 : 1);
+    return list.sort((a, b) => rank(a) - rank(b));   // stable: keeps upload order inside each group
+}
+
+const WARN_ICON = '<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>';
+const CHECK_ICON = '<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>';
+const CLOSE_ICON = '<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>';
 
 function formatSize(bytes) {
     if (bytes < 1024) return `${bytes} B`;
@@ -82,6 +108,8 @@ function showToast(message, type = "success", duration = 4000, onClose = null) {
         }, 300);
     }, duration);
 }
+
+/* ---------- Deluge function call ---------- */
 
 /* Logs the execute() result in a readable way: status, the Deluge info logs, and the function output as JSON */
 function logFunctionResult(name, response) {
@@ -131,15 +159,15 @@ function showResult(out) {
     $("result-section").classList.remove("hidden");
     const s = $("result-status");
     s.className = `result-status ${ok ? "ok" : "error"}`;
-    s.innerHTML = `${ok ? CHECK_ICON : WARN_ICON}<span>${ok ? "Address captured from the document." : escapeHtml(out.message || "The address could not be captured.")}</span>`;
-    $("res-street").value = out.street_address || "";
-    $("res-city").value = out.city || "";
+    s.innerHTML = `${ok ? CHECK_ICON : WARN_ICON}<span>${escapeHtml(out.message || (ok ? "Address captured from the document." : "The address could not be captured."))}</span>`;
+    $("res-street").value = ok ? (out.street_address || "") : "";
+    $("res-city").value = ok ? (out.city || "") : "";
     $("res-country").value = ok ? (out.country || "United Arab Emirates") : "";
     $("result-section").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+/* Calls the Deluge function for one file and returns its result (never shows UI) */
 async function runExtraction(item) {
-    showLoader("Reading the document...");
     let out;
     try {
         const args = { application_id: String(currentRecordId), attachment_id: item.attachmentId };
@@ -165,9 +193,44 @@ async function runExtraction(item) {
         console.error("Error in runExtraction:", err);
         out = { status: "error", message: "The extraction function failed. Check the console." };
     }
-    item.extracted = true;
+    return out;
+}
+
+/* Reads the lease-type document first. If its street is empty or shorter than 5 characters,
+   goes straight to the TL, whose street must have at least 10 characters.
+   If nothing passes, the street, city and country are left blank. */
+async function extractAddress() {
+    const candidates = sourceCandidates();
+    if (candidates.length === 0) {
+        showResult({ status: "error", message: "No readable ULA, Ejari, Tenancy Contract, Lease Agreement, Lease Document, Facility Agreement, Co-Working Agreement or TL file was uploaded." });
+        return;
+    }
+
+    const reasons = [];   // why each document did not give an address (shown if all fail)
+    for (const item of candidates) {
+        const type = docTypeOf(item.file.name);
+        showLoader(`Reading the ${type.label} document...`);
+        const out = await runExtraction(item);
+        const street = String(out.street_address || "").trim();
+        // SRTIP documents: the Deluge function sets skip_min_length, so any non-empty street is accepted
+        const exempt = String(out.skip_min_length) === "true";
+        console.log("Result from", item.file.name, "(" + type.label + "):", out, "| street length:", street.length, "| minimum:", exempt ? "none (SRTIP)" : type.minStreet);
+
+        if (out.status === "success" && street.length > 0 && (exempt || street.length >= type.minStreet)) {
+            addressCaptured = true;
+            out.street_address = street;
+            out.message = `Address captured from the ${type.label} document.`;
+            hideLoader();
+            showResult(out);
+            return;
+        }
+        console.warn(`${type.label} gave no usable street (needs at least ${type.minStreet} characters).`);
+        reasons.push(`${type.label}: ${out.message || ("street too short (" + street.length + " characters)")}`);
+    }
+
+    // No document gave a long enough street: leave everything blank
     hideLoader();
-    showResult(out);
+    showResult({ status: "error", message: "No valid street address was found in the uploaded documents, so it was left blank. " + reasons.join(" | ") });
 }
 
 /* ---------- Error helpers ---------- */
@@ -187,10 +250,11 @@ function render() {
     const list = $("file-list");
     list.innerHTML = files.map(item => {
         const ext = getExt(item.file.name);
+        const tag = matchesRequired(item.file.name) ? tagOf(item.file.name) : null;
         const meta = item.status === "uploading" ? "Uploading..."
                    : item.status === "done"      ? `Uploaded · ${formatSize(item.file.size)}`
                    : item.status === "error"     ? escapeHtml(item.error || "Upload failed. Try again.")
-                   : formatSize(item.file.size) + (tagOf(item.file.name) ? ` · Required ${tagOf(item.file.name)} file` : "");
+                   : formatSize(item.file.size) + (tag ? ` · Required ${escapeHtml(tag)} file` : "");
         const state = item.status === "uploading" ? '<div class="file-spinner"></div>'
                     : item.status === "done"      ? `<span class="ok">${CHECK_ICON}</span>`
                     : "";
@@ -292,13 +356,13 @@ async function handleSubmit(event) {
     }
 
     if (!files.some(f => matchesRequired(f.file.name))) {
-        setFilesError(`A file with "ULA" or "TL" in its name is required. Add it before uploading.`);
+        setFilesError(`Add at least one PDF or image with "ULA", "Ejari", "Tenancy Contract", "Lease Agreement", "Lease Document", "Facility Agreement", "Co-Working Agreement" or "TL" in its name.`);
         $("dropzone").scrollIntoView({ behavior: "smooth", block: "center" });
         return;
     }
 
     const queue = files.filter(f => f.status !== "done");
-    if (queue.length === 0) { closeWidget(); return; }
+    if (queue.length === 0 && addressCaptured) { closeWidget(); return; }
 
     clearFilesError();
     isUploading = true; render();
@@ -309,18 +373,8 @@ async function handleSubmit(event) {
 
     const failed = files.filter(f => f.status === "error").length;
 
-    // Read the address from the ULA file first; only if there is none, from the TL file (once per file)
-    const docItem = pickSourceFile();
-    console.log("Source document for address:", docItem ? docItem.file.name + " (" + tagOf(docItem.file.name) + ")" : "none");
-    if (docItem && !docItem.extracted) {
-        if (docItem.attachmentId) {
-            await runExtraction(docItem);
-        } else {
-            docItem.extracted = true;
-            console.warn("attachFile did not return an attachment id. Check the Raw Response log above.");
-            showResult({ status: "error", message: "CRM did not return the attachment ID, so the document could not be read." });
-        }
-    }
+    // Read the address: lease-type document first, then TL
+    if (!addressCaptured) await extractAddress();
 
     if (failed === 0) {
         $("upload-btn-label").textContent = "Done";
