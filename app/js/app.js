@@ -11,11 +11,15 @@
         - if none gives a street, the TL, street of at least 10 characters;
         - if the TL also fails, the address is left blank.
         - SRTIP documents are accepted whatever the street length.
+      The address is not shown in the widget. It is only passed to the Deluge side.
    4. Calls "update_account_from_widget" once per file, passing the folder values,
-      the file ID and the address. That function uploads the file to WorkDrive.
+      the file ID and the address. That function uploads the file to WorkDrive
+      and updates the Billing Address of the Account.
+   5. When everything is uploaded, shows a success toast, then proceeds the
+      Blueprint transition and closes the widget.
 --------------------------------------------------------------- */
-const MAX_FILE_MB = 20;
-const MAX_FILES = 10;
+const MAX_FILE_MB = 40;
+const MAX_FILES = 20;
 const ALLOWED_EXT = ["pdf", "doc", "docx", "xls", "xlsx", "csv", "txt", "png", "jpg", "jpeg", "zip"];
 
 const FOLDER_FUNCTION  = "license_issued_upload_documents";   // returns legal_doc_id, account_id, tl_jurisdiction
@@ -235,19 +239,6 @@ function findExtraction(node, depth = 0) {
     return null;
 }
 
-/* Temporary preview of what was captured */
-function showResult(out) {
-    const ok = out.status === "success";
-    $("result-section").classList.remove("hidden");
-    const s = $("result-status");
-    s.className = `result-status ${ok ? "ok" : "error"}`;
-    s.innerHTML = `${ok ? CHECK_ICON : WARN_ICON}<span>${escapeHtml(out.message || (ok ? "Address captured from the document." : "The address could not be captured."))}</span>`;
-    $("res-street").value = ok ? (out.street_address || "") : "";
-    $("res-city").value = ok ? (out.city || "") : "";
-    $("res-country").value = ok ? (out.country || "United Arab Emirates") : "";
-    $("result-section").scrollIntoView({ behavior: "smooth", block: "nearest" });
-}
-
 /* Calls the Deluge function for one stored file and returns its result (never shows UI) */
 async function runExtraction(item) {
     let out;
@@ -292,30 +283,30 @@ function sourceCandidates() {
 /* Reads the lease-type document first. If its street is empty or shorter than 5 characters,
    goes straight to the TL, whose street must have at least 10 characters.
    SRTIP documents are accepted at any length (the Deluge function sets skip_min_length).
-   Returns { street_address, city, country, source } or null when nothing passes. */
+   Returns { street_address, city, country, source } or null when nothing passes.
+   The result is only logged to the console, it is not shown in the widget. */
 async function extractAddress() {
     const candidates = sourceCandidates();
     if (candidates.length === 0) {
-        showResult({ status: "error", message: "No readable ULA, Ejari, Tenancy Contract, Lease Agreement, Lease Document, Facility Agreement, Co-Working Agreement or TL file (PDF or image) was found, so the address was left blank." });
+        console.warn("No readable ULA, Ejari, Tenancy Contract, Lease Agreement, Lease Document, Facility Agreement, Co-Working Agreement or TL file (PDF or image) was found, so the address was left blank.");
         return null;
     }
 
-    const reasons = [];   // why each document did not give an address (shown if all fail)
+    const reasons = [];   // why each document did not give an address (logged if all fail)
     for (const item of candidates) {
         const type = docTypeOf(item.file.name);
-        item.stage = `Reading the ${type.label} document...`; render();
-        showLoader(`Reading the ${type.label} document...`);
+        item.stage = "Uploading the files..."; render();
+        showLoader("Uploading the files...");
         const out = await runExtraction(item);
         const street = String(out.street_address || "").trim();
         const exempt = String(out.skip_min_length) === "true";
         console.log("Result from", item.file.name, "(" + type.label + "):", out, "| street length:", street.length, "| minimum:", exempt ? "none (SRTIP)" : type.minStreet);
 
         if (out.status === "success" && street.length > 0 && (exempt || street.length >= type.minStreet)) {
-            out.street_address = street;
-            out.message = `Address captured from the ${type.label} document.`;
             hideLoader();
-            showResult(out);
-            return { street_address: street, city: String(out.city || "").trim(), country: String(out.country || "United Arab Emirates").trim(), source: type.label };
+            const captured = { street_address: street, city: String(out.city || "").trim(), country: String(out.country || "United Arab Emirates").trim(), source: type.label };
+            console.log("Address captured from the " + type.label + " document:", captured);
+            return captured;
         }
         console.warn(`${type.label} gave no usable street (needs at least ${type.minStreet} characters).`);
         reasons.push(`${type.label}: ${out.message || ("street too short (" + street.length + " characters)")}`);
@@ -323,7 +314,7 @@ async function extractAddress() {
 
     // No document gave a long enough street: leave everything blank
     hideLoader();
-    showResult({ status: "error", message: "No valid street address was found in the uploaded documents, so it was left blank. " + reasons.join(" | ") });
+    console.warn("No valid street address was found in the uploaded documents, so it was left blank. " + reasons.join(" | "));
     return null;
 }
 
@@ -470,6 +461,21 @@ function closeWidget() {
     catch (e) { (window.top && window.top !== window ? window.top : window).location.reload(); }
 }
 
+/* Moves the Blueprint to the next stage, then closes the widget.
+   If the proceed call is not available or fails, the widget still closes. */
+async function finishWidget() {
+    try {
+        if (ZOHO.CRM.BLUEPRINT && typeof ZOHO.CRM.BLUEPRINT.proceed === "function") {
+            await ZOHO.CRM.BLUEPRINT.proceed();
+        } else {
+            console.warn("ZOHO.CRM.BLUEPRINT.proceed is not available.");
+        }
+    } catch (err) {
+        console.error("Blueprint proceed failed:", err);
+    }
+    closeWidget();
+}
+
 async function handleSubmit(event) {
     event.preventDefault();
     if (isUploading) return;
@@ -484,13 +490,13 @@ async function handleSubmit(event) {
         return;
     }
     if (!files.some(f => docTypeOf(f.file.name))) {
-        setFilesError(`Add at least one file with "ULA", "Ejari", "Tenancy Contract", "Lease Agreement", "Lease Document", "Facility Agreement", "Co-Working Agreement" or "TL" in its name.`);
+        setFilesError(`Add at least one file with "ULA", "Ejari", "Tenancy Contract", "Lease Agreement", "Lease Document", "Facility Agreement", "Co-Working Agreement" or "TL" in its filename.`);
         $("dropzone").scrollIntoView({ behavior: "smooth", block: "center" });
         return;
     }
 
     const queue = files.filter(f => f.status !== "done");
-    if (queue.length === 0) { closeWidget(); return; }
+    if (queue.length === 0) { finishWidget(); return; }
 
     clearFilesError();
     isUploading = true; render();
@@ -531,7 +537,13 @@ async function handleSubmit(event) {
     if (failed === 0) {
         $("upload-btn-label").textContent = "Done";
         const note = addressInfo ? "" : " The address was not captured, so it needs to be entered manually.";
-        showToast(`${files.length} ${files.length === 1 ? "file was" : "files were"} uploaded to WorkDrive.${note}`, addressInfo ? "success" : "error", addressInfo ? 3000 : 6000);
+        // The toast fades out by itself, then the Blueprint moves on and the widget closes
+        showToast(
+            `${files.length} ${files.length === 1 ? "file was" : "files were"} uploaded to WorkDrive.${note}`,
+            addressInfo ? "success" : "error",
+            addressInfo ? 3000 : 6000,
+            finishWidget
+        );
     } else {
         showToast(`${failed} ${failed === 1 ? "file" : "files"} failed to upload. Remove or retry using Upload Files.`, "error", 4000);
     }
