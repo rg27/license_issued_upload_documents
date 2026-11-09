@@ -536,12 +536,14 @@ async function handleSubmit(event) {
     const failed = files.filter(f => f.status === "error").length;
     if (failed === 0) {
         $("upload-btn-label").textContent = "Done";
-        const note = addressInfo ? "" : " The address was not captured, so it needs to be entered manually.";
+        // const note = addressInfo ? "" : " The address was not captured, so it needs to be entered manually.";
         // The toast fades out by itself, then the Blueprint moves on and the widget closes
+        // Always the same success toast, whether or not an address was captured.
+        // The toast fades out by itself, then the Blueprint moves on and the widget closes.
         showToast(
-            `${files.length} ${files.length === 1 ? "file was" : "files were"} uploaded to WorkDrive.${note}`,
-            addressInfo ? "success" : "error",
-            addressInfo ? 3000 : 6000,
+            `${files.length} ${files.length === 1 ? "file was" : "files were"} uploaded to WorkDrive.`,
+            "success",
+            3000,
             finishWidget
         );
     } else {
